@@ -4,10 +4,11 @@ import {
   integer,
   timestamp,
   pgEnum,
-  index
+  index,
+  check
 } from "drizzle-orm/pg-core";
 
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { users } from "./user.sql";
 import { labels } from "./label.sql";
 import { issues } from "./issue.sql";
@@ -15,6 +16,7 @@ import { issues } from "./issue.sql";
 import type { InferInsertModel, InferSelectModel } from "drizzle-orm";
 import { pgTable } from "./index.sql";
 import { comments } from "./comment.sql";
+import { commentHideReasonEnum } from "./comment-hide-reason";
 
 export const eventTypeEnum = pgEnum("event_type", [
   "CHANGE_TITLE",
@@ -23,7 +25,11 @@ export const eventTypeEnum = pgEnum("event_type", [
   "ASSIGN_USER",
   "ADD_LABEL",
   "REMOVE_LABEL",
-  "ADD_COMMENT"
+  "ADD_COMMENT",
+  "DELETE_COMMENT",
+  "RESTORE_COMMENT",
+  "HIDE_COMMENT",
+  "UNHIDE_COMMENT"
 ]);
 
 export type EventType = (typeof eventTypeEnum)["enumValues"][number];
@@ -84,10 +90,11 @@ export const issueEvents = pgTable(
       onDelete: "cascade"
     }),
 
-    // type = ADD_COMMENT
+    // Comment creation and visibility changes.
     comment_id: integer("comment_id").references(() => comments.id, {
       onDelete: "cascade"
-    })
+    }),
+    comment_hidden_reason: commentHideReasonEnum("comment_hidden_reason")
   },
   (table) => ({
     initiatorUsernameIdx: index("ev_initiator_uname_idx").on(
@@ -95,6 +102,20 @@ export const issueEvents = pgTable(
     ),
     assigneeUsernameIdx: index("ev_assignee_uname_idx").on(
       table.assignee_username
+    ),
+    commentHistoryIdx: index("ev_comment_history_idx")
+      .on(table.comment_id, table.created_at, table.id)
+      .where(sql`${table.comment_id} is not null`),
+    // PostgreSQL 12 only accepts new enum values after the migration commits.
+    commentTargetCheck: check(
+      "ev_comment_target_check",
+      sql`${table.type}::text not in ('DELETE_COMMENT', 'RESTORE_COMMENT', 'HIDE_COMMENT', 'UNHIDE_COMMENT')
+          or ${table.comment_id} is not null`
+    ),
+    commentReasonCheck: check(
+      "ev_comment_reason_check",
+      sql`(${table.type}::text <> 'HIDE_COMMENT' or ${table.comment_hidden_reason} is not null)
+          and (${table.comment_hidden_reason} is null or ${table.type}::text in ('HIDE_COMMENT', 'UNHIDE_COMMENT'))`
     )
   })
 );

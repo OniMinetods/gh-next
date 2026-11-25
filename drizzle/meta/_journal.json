@@ -533,6 +533,13 @@
       "when": 1700856216160,
       "tag": "0075_volatile_harry_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "5",
+      "when": 1795614755511,
+      "tag": "0076_harsh_golden_guardian",
+      "breakpoints": true
     }
   ]
 }
