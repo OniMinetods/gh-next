@@ -1,3 +1,5 @@
+const markdownPolicyVersion = 2;
+
 export const CacheKeys = {
   github: () => ["GITHUB_REPO_DATA"],
   labelCount: () => ["LABEL_COUNT"],
@@ -26,13 +28,18 @@ export const CacheKeys = {
     props.repo,
     props.number
   ],
+  markdownTree: (key: string | number | (string | number)[]) => [
+    "SAFE_MARKDOWN",
+    markdownPolicyVersion,
+    ...(Array.isArray(key) ? key : [key])
+  ],
   commentMarkdown: (
     repositoryId: number,
     commentId: number,
     version: number
   ) => [
     "COMMENT_MARKDOWN",
-    1, // Safe Markdown policy version.
+    markdownPolicyVersion,
     repositoryId,
     commentId,
     version

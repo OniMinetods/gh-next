@@ -1,10 +1,16 @@
 const appFetch = globalThis.fetch;
+const profiles = {
+  owner: { id: 900000001, login: "Fredkiss3", name: "Fixture Maintainer" },
+  author: { id: 900000002, login: "FixtureAuthor", name: "Fixture Author" },
+  reader: { id: 900000003, login: "FixtureReader", name: "Fixture Reader" }
+};
 const repositoryPath = "Fredkiss3/gh-next";
 const readmeUrl = `https://raw.githubusercontent.com/${repositoryPath}/main/README.md`;
 const localOrigins = new Set([
   "http://127.0.0.1:53000",
   "http://localhost:53000",
-  "http://127.0.0.1:56380"
+  "http://127.0.0.1:56380",
+  "http://webdis:7379"
 ]);
 
 // Installed before Next.js wraps fetch, so server-rendered pages use these fixtures.
@@ -17,6 +23,24 @@ globalThis.fetch = async (input, init) => {
       "# Baseline README\n\nThis README comes from the **GitHub fixture**.\n",
       { headers: { "content-type": "text/plain; charset=utf-8" } }
     );
+  }
+
+  if (url.href === "https://github.com/login/oauth/access_token") {
+    const request = new Request(input, init);
+    const { code, client_id } = await request.json();
+    if (client_id === "gh-next-e2e" && Object.hasOwn(profiles, code)) {
+      return Response.json({ access_token: "fixture:" + code });
+    }
+    return Response.json({ error: "bad_verification_code" }, { status: 400 });
+  }
+
+  if (url.href === "https://api.github.com/user") {
+    const request = new Request(input, init);
+    const role = request.headers.get("Authorization")?.replace(/^token fixture:/, "");
+    if (role && Object.hasOwn(profiles, role)) {
+      return Response.json({ ...profiles[role], avatar_url: "/favicon.png" });
+    }
+    return Response.json({ message: "Bad credentials" }, { status: 401 });
   }
 
   if (url.href === "https://api.github.com/graphql") {
@@ -62,6 +86,10 @@ globalThis.fetch = async (input, init) => {
         }
       });
     }
+  }
+
+  if (url.origin === "https://lighter.codehike.org" && url.pathname.startsWith("/grammars/")) {
+    return new Response(null, { status: 503 });
   }
 
   throw new Error(

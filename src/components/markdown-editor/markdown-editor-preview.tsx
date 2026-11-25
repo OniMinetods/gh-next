@@ -12,16 +12,7 @@ export function MarkdownEditorPreview(props: MarkdownEditorPreviewProps) {
   return (
     <>
       <ErrorBoundary
-        FallbackComponent={({ error }) => (
-          <div className="flex flex-wrap gap-2">
-            <span className="text-xl font-semibold">
-              Error rendering preview :
-            </span>
-            <code className="rounded-md bg-neutral text-red-400 px-1.5 py-1">
-              {error.toString()}
-            </code>
-          </div>
-        )}
+        fallback={<p role="alert">Could not render preview. Switch to Write and try again.</p>}
       >
         <React.Suspense
           fallback={

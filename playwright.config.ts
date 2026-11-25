@@ -17,7 +17,13 @@ export default defineConfig({
     // A stable public-shaped test address avoids the middleware's IP lookup.
     extraHTTPHeaders: { "CF-Connecting-IP": "203.0.113.10" }
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [{
+    name: "chromium",
+    use: {
+      ...devices["Desktop Chrome"],
+      channel: process.env.PLAYWRIGHT_CHROMIUM_CHANNEL
+    }
+  }],
   webServer: {
     command: `node tests/e2e/prepare-database.mjs && pnpm exec next dev --hostname 127.0.0.1 --port ${port}`,
     url: `${baseURL}/favicon.png`,

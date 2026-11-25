@@ -1,49 +1,34 @@
 import "server-only";
-import * as React from "react";
-
-// components
+import { createElement, Fragment } from "react";
 import { Code } from "bright";
-import { MarkdownCodeBlock } from "./markdown-code-block";
-import {
-  MarkdownA,
-  type IssueReference,
-  type Reference,
-  type ResolvedReferences
-} from "~/components/markdown/markdown-a";
-import { MarkdownH } from "~/components/markdown/markdown-h";
+import { preload } from "@code-hike/lighter";
+import { toJsxRuntime } from "hast-util-to-jsx-runtime";
 import {
   DeviceCameraVideoIcon,
   TriangleDownIcon
 } from "@primer/octicons-react";
-
-// utils
-import remarkGfm from "remark-gfm";
-import remarkGithub from "remark-github";
-import remarkGemoji from "remark-gemoji";
-import rehypeSlug from "rehype-slug";
+import { MarkdownCodeBlock } from "./markdown-code-block";
+import { MarkdownA, issueReferenceKey } from "./markdown-a";
+import { MarkdownH } from "./markdown-h";
+import { parseMarkdown } from "./markdown-content";
 import { clsx } from "~/lib/shared/utils.shared";
+import { CacheKeys } from "~/lib/shared/cache-keys.shared";
 import githubDark from "~/lib/server/themes/github-dark.json";
 import githubLight from "~/lib/server/themes/github-light.json";
-import rehypeRaw from "rehype-raw";
-import { compile, run } from "@mdx-js/mdx";
-import { env } from "~/env";
 import { getMultipleIssuesPerRepositories } from "~/models/issues";
-import { VFile } from "vfile";
-import { remark } from "remark";
 import {
   GITHUB_AUTHOR_USERNAME,
-  GITHUB_REPOSITORY_NAME,
-  PRODUCTION_DOMAIN
+  GITHUB_REPOSITORY_NAME
 } from "~/lib/shared/constants";
 import { getMultipleUserByUsername } from "~/models/user";
 import { ttlCache } from "~/lib/server/rsc-utils.server";
-import remarkBreaks from "remark-breaks";
-
-// types
 import type { CacheId } from "~/lib/server/rsc-utils.server";
-import type { UseMdxComponents } from "@mdx-js/mdx";
-import type { IssueQueryResult } from "~/models/issues";
-import type { UserQueryResult } from "~/models/user";
+import type { Components, Jsx } from "hast-util-to-jsx-runtime";
+import type { ElementType } from "react";
+import type { Reference, ResolvedReferences } from "./markdown-a";
+
+const jsx: Jsx = (type, props, key) =>
+  createElement(type as ElementType, { ...props, key });
 
 export type MarkdownProps = {
   content: string;
@@ -60,40 +45,21 @@ export async function Markdown({
   className,
   linkHeaders = false,
   editableCheckboxes = false,
-  repository: currentRepository = `${GITHUB_AUTHOR_USERNAME}/${GITHUB_REPOSITORY_NAME}`,
+  repository:
+    currentRepository = `${GITHUB_AUTHOR_USERNAME}/${GITHUB_REPOSITORY_NAME}`,
   cacheKey,
   cacheTTL
 }: MarkdownProps) {
-  const dt = new Date().getTime();
-
-  console.time(`\n\x1b[34m[${dt}] \x1b[33m Markdown Rendering \x1b[37m`);
-
-  const processFn = cacheKey
-    ? ttlCache(processMarkdownContentAndResolveReferences, {
-        id: cacheKey,
-        ttl: cacheTTL
-      })
-    : processMarkdownContentAndResolveReferences;
-
-  const { processedContent, resolvedReferences } = await processFn(
+  const { tree, references, localIssueLinks } = await getMarkdownTree(
     content,
-    currentRepository
+    currentRepository,
+    cacheKey,
+    cacheTTL
   );
-
-  const generatedMdxModule = await run(processedContent, {
-    Fragment: React.Fragment,
-    jsx: React.createElement,
-    jsxs: React.createElement
-  });
-
-  const components = await getComponents({
-    linkHeaders,
-    editableCheckboxes,
-    resolvedReferences,
-    currentRepository
-  });
-
-  console.timeEnd(`\n\x1b[34m[${dt}] \x1b[33m Markdown Rendering \x1b[37m`);
+  const resolvedReferences = await resolveReferences([
+    ...Object.values(references),
+    ...Object.values(localIssueLinks)
+  ]);
 
   return (
     <article
@@ -102,145 +68,99 @@ export async function Markdown({
         className
       )}
     >
-      {generatedMdxModule.default({ components })}
+      {toJsxRuntime(tree, {
+        Fragment,
+        jsx,
+        jsxs: jsx,
+        components: getComponents({
+          linkHeaders,
+          editableCheckboxes,
+          references,
+          localIssueLinks,
+          resolvedReferences,
+          currentRepository
+        })
+      })}
     </article>
   );
 }
 
-async function processMarkdownContentAndResolveReferences(
+async function getMarkdownTree(
   content: string,
-  repository: string
+  repository: string,
+  cacheKey?: CacheId,
+  cacheTTL?: number
 ) {
-  const references: Reference[] = [];
-
-  // preprocess links & mentions
-  const preprocessedContent = await remark()
-    .use(remarkGfm)
-    .use(remarkGithub, {
-      repository,
-      mentionStrong: false,
-      baseURL: PRODUCTION_DOMAIN,
-      buildUrl: ({ fullUrlMatch, ...values }) => {
-        const searchParams = new URLSearchParams(values);
-        switch (values.type) {
-          case "commit":
-            references.push(values);
-            return `${env.NEXT_PUBLIC_VERCEL_URL}/${values.user}/${
-              values.project
-            }/commit/${values.hash}?${searchParams.toString()}`;
-          case "issue":
-            references.push(values);
-            return `${env.NEXT_PUBLIC_VERCEL_URL}/${values.user}/${
-              values.project
-            }/issues/${values.no}?${searchParams.toString()}`;
-          case "mention":
-            references.push(values);
-            return `${env.NEXT_PUBLIC_VERCEL_URL}/${
-              values.user
-            }?${searchParams.toString()}`;
-          default:
-            return false;
-        }
-      }
-    })
-    .process(
-      new VFile({
-        basename: "example.md",
-        value: content
-      })
-    );
-
-  const processedContent = await compile(preprocessedContent, {
-    jsx: false,
-    outputFormat: "function-body",
-    rehypePlugins: [
-      rehypeRaw,
-      // @ts-expect-error
-      rehypeSlug
-    ],
-    remarkPlugins: [remarkGemoji, remarkBreaks, remarkGfm],
-    format: "md"
-  });
-
-  const resolvedReferences = await resolveReferences(references);
-  return {
-    resolvedReferences,
-    processedContent: String(processedContent)
-  };
+  if (cacheKey) {
+    const cached = ttlCache(parseMarkdown, {
+      id: CacheKeys.markdownTree(cacheKey),
+      ttl: cacheTTL,
+      forceDev: process.env.GH_NEXT_E2E === "1"
+    });
+    try {
+      return await cached(content, repository);
+    } catch (error) {
+      console.error(
+        "Markdown cache unavailable",
+        error instanceof Error ? error.name : undefined
+      );
+    }
+  }
+  return parseMarkdown(content, repository);
 }
 
 async function resolveReferences(
   references: Reference[]
 ): Promise<ResolvedReferences> {
   const issueReferences = references.filter(
-    (ref) => ref.type === "issue"
-  ) as IssueReference[];
-
+    (reference): reference is Extract<Reference, { type: "issue" }> =>
+      reference.type === "issue"
+  );
   const userMentions = references
-    .map((ref) => (ref.type === "mention" ? ref.user : null))
-    .filter((item) => item !== null) as string[];
+    .filter((reference) => reference.type === "mention")
+    .map((reference) => reference.user);
 
-  const [resolvedIssues, resolvedMentions] = await Promise.all([
+  const [issues, mentions] = await Promise.all([
     getMultipleIssuesPerRepositories(issueReferences),
     getMultipleUserByUsername(userMentions)
   ]);
 
   return {
-    issues: resolvedIssues.reduce(
-      (acc, issue) => {
-        acc[issue.number] = issue;
-        return acc;
-      },
-      {} as Record<number, IssueQueryResult>
+    issues: new Map(
+      issues.map((issue) => [
+        issueReferenceKey(
+          issue.repository_owner,
+          issue.repository_name,
+          issue.number
+        ),
+        issue
+      ])
     ),
-    mentions: resolvedMentions.reduce(
-      (acc, user) => {
-        acc[user.username.toLowerCase()] = user;
-        return acc;
-      },
-      {} as Record<string, UserQueryResult>
+    mentions: new Map(
+      mentions.map((user) => [user.username.toLowerCase(), user])
     )
   };
 }
 
-async function getComponents({
+function getComponents({
   linkHeaders,
   editableCheckboxes,
+  references,
+  localIssueLinks,
   resolvedReferences,
   currentRepository
 }: {
   linkHeaders: boolean;
   editableCheckboxes: boolean;
+  references: Record<string, Reference>;
+  localIssueLinks: Record<string, Extract<Reference, { type: "issue" }>>;
   resolvedReferences: ResolvedReferences;
   currentRepository: string;
-}) {
-  type MDXComponents = ReturnType<UseMdxComponents>;
-
+}): Partial<Components> {
   Code.theme = {
     dark: githubDark,
     light: githubLight
   };
-
-  const disallowedTags = {
-    title: () => null,
-    textarea: () => null,
-    style: () => null,
-    iframe: () => null,
-    embed: () => null,
-    script: () => null,
-    plaintext: () => null,
-    noframes: () => null,
-    noembed: () => null,
-    xmp: () => null,
-    dialog: () => null,
-    link: () => null,
-    html: () => null,
-    select: () => null,
-    option: () => null,
-    object: () => null
-  } satisfies MDXComponents;
-
-  let noOfKeys = 0;
 
   return {
     blockquote: (props) => (
@@ -271,8 +191,9 @@ async function getComponents({
           controls={true}
           className="rounded-b-md"
           src={props.src}
-          {...props}
-        ></video>
+          poster={props.poster}
+          preload="none"
+        />
       </details>
     ),
     h1: (props) => <MarkdownH as="h1" showLink={linkHeaders} {...props} />,
@@ -282,11 +203,9 @@ async function getComponents({
     h5: (props) => <MarkdownH as="h5" showLink={linkHeaders} {...props} />,
     h6: (props) => <MarkdownH as="h6" showLink={linkHeaders} {...props} />,
     ul: (props) => {
-      const key = ++noOfKeys;
       return (
         <ul
           {...props}
-          key={key}
           {...{
             "data-task-list":
               props.className === "contains-task-list" ? "true" : undefined
@@ -310,59 +229,46 @@ async function getComponents({
       );
     },
     ol: (props) => {
-      const key = ++noOfKeys;
       return (
         <ol
           {...props}
-          key={key}
           className="list-decimal pl-4 [&_ol]:list-[lower-roman] my-2"
         />
       );
     },
     p: (props) => {
-      const key = ++noOfKeys;
       return (
-        <p suppressHydrationWarning {...props} key={key} className="mb-4">
+        <p suppressHydrationWarning {...props} className="mb-4">
           {props.children}
         </p>
       );
     },
-    table: (props) => {
-      const key = ++noOfKeys;
-      return (
+    table: (props) => (
+      <div className="max-w-full overflow-x-auto">
         <table
           {...props}
-          key={key}
-          className="block w-max max-w-full table-auto border-collapse overflow-auto border border-neutral"
+          className="w-max table-auto border-collapse border border-neutral"
         />
-      );
-    },
+      </div>
+    ),
     th: (props) => {
-      const key = ++noOfKeys;
       return (
         <th
           {...props}
-          key={key}
           className="border border-neutral px-5 py-2 text-left text-lg font-semibold"
         />
       );
     },
     tr: (props) => {
-      const key = ++noOfKeys;
-      return <tr {...props} key={key} className="even:bg-subtle" />;
+      return <tr {...props} className="even:bg-subtle" />;
     },
     td: (props) => {
-      const key = ++noOfKeys;
-      return (
-        <td {...props} key={key} className="border border-neutral px-5 py-2" />
-      );
+      return <td {...props} className="border border-neutral px-5 py-2" />;
     },
     li: (props) => {
-      const key = ++noOfKeys;
       return (
         <li
           {...props}
-          key={key}
           {...{
             "data-task-item":
               props.className === "task-list-item" ? "true" : undefined
@@ -374,23 +280,48 @@ async function getComponents({
       );
     },
     hr: (props) => <hr className="h-1 bg-neutral/50 border-0" {...props} />,
-    a: (props) => {
-      const key = ++noOfKeys;
+    a: ({ href, children, ...props }) => {
+      const localIssue =
+        href && Object.hasOwn(localIssueLinks, href)
+          ? localIssueLinks[href]
+          : undefined;
+      if (
+        localIssue &&
+        !resolvedReferences.issues.has(
+          issueReferenceKey(
+            localIssue.user,
+            localIssue.project,
+            Number(localIssue.no)
+          )
+        )
+      )
+        return <span>{children}</span>;
+
       return (
         <MarkdownA
+          {...props}
+          href={href}
+          reference={
+            href && Object.hasOwn(references, href)
+              ? references[href]
+              : undefined
+          }
           currentRepository={currentRepository}
           resolvedReferences={resolvedReferences}
-          {...props}
-          key={key}
-        />
+        >
+          {children}
+        </MarkdownA>
       );
     },
+    pre: ({ children }) => (
+      <div className="my-3 min-w-0 whitespace-pre-wrap">{children}</div>
+    ),
     code: (props) => {
       const lang = props.className?.replace(`language-`, "");
-      if (props.children) {
+      if (typeof props.children === "string" && props.children.length > 0) {
         // single backtick (`) are inline code, so we render them as a simple inline-code
         // they don't contains '\n' and they don't have a lang defined
-        if (lang === undefined && !props.children.toString().includes("\n")) {
+        if (lang === undefined && !props.children.includes("\n")) {
           return (
             <code className="rounded-md bg-neutral px-1.5 py-1 text-sm">
               {props.children}
@@ -401,36 +332,62 @@ async function getComponents({
         return (
           <MarkdownCodeBlock
             className={clsx("absolute right-2 top-7")}
-            codeStr={props.children.toString().trimEnd()}
+            codeStr={props.children.trimEnd()}
           >
-            <Code
-              lang={lang}
-              codeClassName="bg-neutral/30 rounded-md py-[16px] px-[2px] overflow-auto w-full !min-w-0 text-sm"
-              className="w-full overflow-scroll rounded-md p-0 text-sm !min-w-0"
-            >
-              {props.children.toString().trimEnd()}
-            </Code>
+            <HighlightedCode lang={lang} code={props.children.trimEnd()} />
           </MarkdownCodeBlock>
         );
       } else {
-        return <></>;
+        return <code>{props.children}</code>;
       }
     },
-    img: (props) => (
-      <a href={props.src} target="_blank" rel="noreferrer">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img {...props} loading="lazy" alt={props.alt ?? ""} />
-      </a>
-    ),
-    input: (props) => {
-      if (props.type !== "checkbox") {
-        return null;
-      }
-      return (
-        <input {...props} type="checkbox" disabled={!editableCheckboxes} />
-      );
-    },
-    button: (props) => <>{props.children}</>,
-    ...disallowedTags
-  } satisfies MDXComponents;
+    img: ({ src, alt, width, height, title }) =>
+      src ? (
+        <a href={src} target="_blank" rel="noreferrer">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={src}
+            width={width}
+            height={height}
+            title={title}
+            loading="lazy"
+            alt={alt ?? ""}
+          />
+        </a>
+      ) : (
+        <span>{alt}</span>
+      ),
+    input: ({ checked }) => (
+      <input
+        type="checkbox"
+        defaultChecked={checked}
+        disabled={!editableCheckboxes}
+      />
+    )
+  };
+}
+
+async function HighlightedCode({
+  code,
+  lang
+}: {
+  code: string;
+  lang?: string;
+}) {
+  try {
+    if (lang) await preload([lang]);
+    return await Code({
+      lang,
+      code,
+      codeClassName:
+        "bg-neutral/30 rounded-md py-4 px-0.5 overflow-auto w-full min-w-0 text-sm",
+      className: "w-full overflow-auto rounded-md text-sm min-w-0"
+    });
+  } catch {
+    return (
+      <pre className="w-full overflow-auto rounded-md bg-neutral/30 p-3 text-sm">
+        <code>{code}</code>
+      </pre>
+    );
+  }
 }

@@ -28,6 +28,7 @@ try {
   );
   await sql.begin(async (transaction) => {
     await transaction.unsafe(fixtures);
+    await transaction.unsafe(await readFile(new URL("./comment-fixtures.sql", import.meta.url), "utf8"));
   });
 } finally {
   await sql.end();

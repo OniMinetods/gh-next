@@ -98,7 +98,8 @@ export async function getCommentHistoryAction(input: unknown) {
   if (!parsed.success) return { type: "INVALID_INPUT" as const };
   const { issueId, commentId, moderation } = parsed.data;
   const viewer = await getAuthedUser();
-  return getCommentHistory(issueId, commentId, viewer?.id, moderation);
+  const result = await getCommentHistory(issueId, commentId, viewer?.id, moderation);
+  return result.type === "OK" ? { type: result.type, revisions: result.revisions } : result;
 }
 
 const deleted = withAuth(async (input: unknown, { currentUser }: AuthState) => {

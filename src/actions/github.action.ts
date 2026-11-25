@@ -107,14 +107,14 @@ export const getGithubRepoData = cache(async () => {
           }
         }
       `;
-
+      
       const { repository } = await fetchFromGithubAPI<RepositoryStatsResponse>(
-        repostatsQuery,
-        {
-          repoName: GITHUB_REPOSITORY_NAME,
-          repoOwner: GITHUB_AUTHOR_USERNAME
-        }
-      );
+        repostatsQuery,
+        {
+          repoName: GITHUB_REPOSITORY_NAME,
+          repoOwner: GITHUB_AUTHOR_USERNAME
+        }
+      );
 
       const allStargazers: GithubRepositoryData["stargazers"] = [];
 

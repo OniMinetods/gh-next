@@ -1,13 +1,13 @@
 import { z } from "zod";
-import { commentHideReasonEnum } from "~/lib/server/db/schema/comment-hide-reason";
+import { COMMENT_MAX_LENGTH, commentHideReasons } from "~/lib/shared/comment-options";
 
 const maxPgInteger = 2_147_483_647;
 
 export const issueCommentId = z.number().int().positive().max(maxPgInteger);
 
-const content = z
+export const commentContent = z
   .string()
-  .max(65_536)
+  .max(COMMENT_MAX_LENGTH)
   .refine((value) => value.trim().length > 0 && !value.includes("\0"), {
     message: "Enter a non-empty comment without null characters."
   });
@@ -16,7 +16,7 @@ export const createCommentInput = z
   .object({
     issueId: issueCommentId,
     clientRequestId: z.string().uuid(),
-    content
+    content: commentContent
   })
   .strict();
 
@@ -28,10 +28,10 @@ export const changeCommentInput = z
   })
   .strict();
 
-export const editCommentInput = changeCommentInput.extend({ content });
+export const editCommentInput = changeCommentInput.extend({ content: commentContent });
 
 export const hideCommentInput = changeCommentInput.extend({
-  reason: z.enum(commentHideReasonEnum.enumValues)
+  reason: z.enum(commentHideReasons)
 });
 
 export const commentHistoryInput = z

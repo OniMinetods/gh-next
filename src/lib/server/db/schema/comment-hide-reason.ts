@@ -1,10 +1,4 @@
 import { pgEnum } from "drizzle-orm/pg-core";
+import { commentHideReasons } from "~/lib/shared/comment-options";
 
-export const commentHideReasonEnum = pgEnum("comment_hide_reason", [
-  "ABUSE",
-  "OFF_TOPIC",
-  "OUTDATED",
-  "RESOLVED",
-  "DUPLICATE",
-  "SPAM"
-]);
+export const commentHideReasonEnum = pgEnum("comment_hide_reason", [...commentHideReasons]);

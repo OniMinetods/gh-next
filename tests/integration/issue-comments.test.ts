@@ -678,3 +678,57 @@ it("imports an empty discussion once and preserves existing rows and local discu
     await imported.end();
   }
 });
+
+
+it("returns moderation metadata only to an authorized viewer and keeps normal stubs text-free", async () => {
+  const discussion = await issue();
+  const { comment } = await publish(discussion.id, "Hidden body visible only in moderation");
+  const input = target(discussion.id, comment.id, 0);
+  mocks.actor = owner;
+  await actions.hideCommentAction({ ...input, reason: "OFF_TOPIC" });
+
+  expect(await readers.listHiddenComments(discussion.id, outsider.id)).toEqual({ type: "NOT_FOUND" });
+  const moderation = await readers.listHiddenComments(discussion.id, owner.id);
+  expect(moderation).toMatchObject({
+    type: "OK",
+    comments: [{ id: comment.id, reason: "OFF_TOPIC", version: 1 }]
+  });
+  expect(JSON.stringify(moderation)).not.toContain("Hidden body");
+
+  const publicPage = await readers.listIssueComments(discussion.id, { focusId: comment.id, viewerId: outsider.id });
+  expect(publicPage).toMatchObject({ focus: { state: "hidden", reason: "OFF_TOPIC" } });
+  expect(JSON.stringify(publicPage)).not.toMatch(/Hidden body|focusedHidden/);
+  expect(await readers.getCommentHistory(discussion.id, comment.id, author.id, true)).toEqual({ type: "NOT_FOUND" });
+  expect(await readers.getCommentHistory(discussion.id, comment.id, owner.id, true)).toMatchObject({
+    type: "OK",
+    moderatedContent: "Hidden body visible only in moderation"
+  });
+
+  mocks.actor = author;
+  await actions.deleteCommentAction({ ...input, version: 1 });
+  expect(await readers.listIssueComments(discussion.id, { focusId: comment.id })).toMatchObject({
+    focus: { id: comment.id, state: "deleted" }
+  });
+  expect(await readers.listHiddenComments(discussion.id, owner.id)).toMatchObject({
+    comments: [{ id: comment.id, deletedAt: expect.any(Date), version: 2 }]
+  });
+});
+
+it("resolves Markdown issue references by the full public issue identity", async () => {
+  const wanted = await issue();
+  const other = await issue(privateRepo);
+  const [archiveIssue] = await testDatabase.db.insert(issues).values({
+    repository_id: archivedRepo,
+    number: wanted.number,
+    title: "Other issue with the same number",
+    author_username: owner.username,
+    author_avatar_url: owner.avatar_url
+  }).returning();
+
+  const resolved = await issueModels.getMultipleIssuesPerRepositories([
+    { user: "OWNER", project: "PUBLIC-FIXTURE", no: String(wanted.number) },
+    { user: "owner", project: "archived-fixture", no: String(archiveIssue.number) },
+    { user: "owner", project: "private-fixture", no: String(other.number) }
+  ]);
+  expect(resolved.map(({ id }) => id).sort((a, b) => a - b)).toEqual([wanted.id, archiveIssue.id]);
+});

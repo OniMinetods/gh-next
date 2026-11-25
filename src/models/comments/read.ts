@@ -109,7 +109,7 @@ const readSnapshot = {
 
 export async function listIssueComments(
   issueId: number,
-  options: { cursor?: string; focusId?: number } = {}
+  options: { cursor?: string; focusId?: number; viewerId?: number } = {}
 ) {
   return db.transaction(async (tx) => {
     const context = await getIssueCommentContext(tx, issueId);
@@ -117,6 +117,7 @@ export async function listIssueComments(
 
     let start = afterCursor(options.cursor, issueId);
     let focus;
+    let focusedHidden;
     if (options.focusId !== undefined) {
       const target = await findIssueComment(tx, issueId, options.focusId);
       if (!target) return commentNotFound;
@@ -125,6 +126,12 @@ export async function listIssueComments(
         display.state === "visible"
           ? { id: target.id, state: display.state }
           : display;
+      if (display.state === "hidden") {
+        const permissions = commentPermissions(context, options.viewerId, target.authorId);
+        if (permissions.canManageOwn || permissions.canReadModeration) {
+          focusedHidden = { version: target.version, permissions };
+        }
+      }
       if (display.state === "visible") {
         start = sql`(${comments.created_at}, ${comments.id}) >= (${target.cursorTimestamp}::timestamp, ${target.id})`;
       }
@@ -143,7 +150,8 @@ export async function listIssueComments(
         .slice(0, MAX_ITEMS_PER_PAGE)
         .map((row) => visibleCommentData(row, context)),
       nextCursor: commentPageCursor(issueId, rows),
-      focus
+      focus,
+      focusedHidden
     };
   }, readSnapshot);
 }
@@ -219,6 +227,53 @@ export async function getCommentHistory(
       .where(eq(commentRevisions.comment_id, comment.id))
       .orderBy(desc(commentRevisions.created_at), desc(commentRevisions.id));
 
-    return { type: "OK" as const, revisions };
+    return {
+      type: "OK" as const,
+      revisions,
+      repository: `${context.owner}/${context.repository}` as const,
+      moderatedContent: moderation && comment.hidden ? comment.content : undefined
+    };
+  }, readSnapshot);
+}
+
+
+export async function listHiddenComments(
+  issueId: number,
+  viewerId: number,
+  cursor?: string
+) {
+  return db.transaction(async (tx) => {
+    const context = await getIssueCommentContext(tx, issueId);
+    if (!context || !commentPermissions(context, viewerId).canReadModeration) {
+      return commentNotFound;
+    }
+
+    const rows = await tx
+      .select({
+        id: comments.id,
+        authorUsername: comments.author_username,
+        reason: comments.hidden_reason,
+        deletedAt: comments.deleted_at,
+        version: comments.version,
+        cursorTimestamp
+      })
+      .from(comments)
+      .where(and(
+        eq(comments.issue_id, issueId),
+        eq(comments.hidden, true),
+        afterCursor(cursor, issueId)
+      ))
+      .orderBy(asc(comments.created_at), asc(comments.id))
+      .limit(MAX_ITEMS_PER_PAGE + 1);
+
+    return {
+      type: "OK" as const,
+      comments: rows.slice(0, MAX_ITEMS_PER_PAGE).map(
+        ({ id, authorUsername, reason, deletedAt, version }) => ({
+          id, authorUsername, reason, deletedAt, version
+        })
+      ),
+      nextCursor: commentPageCursor(issueId, rows)
+    };
   }, readSnapshot);
 }

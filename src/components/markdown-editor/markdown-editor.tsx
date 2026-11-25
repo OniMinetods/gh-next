@@ -19,6 +19,7 @@ import { enableTabToIndent } from "indent-textarea";
 import type { TextareaProps } from "~/components/textarea";
 
 export type MarkdownEditorProps = Omit<TextareaProps, "value"> & {
+  tabToIndent?: boolean;
   renderMarkdownAction: (
     content: string,
     repositoryPath: `${string}/${string}`
@@ -40,6 +41,7 @@ export function MarkdownEditor({
   label,
   defaultValue,
   renderMarkdownAction,
+  tabToIndent = true,
   ...props
 }: MarkdownEditorProps) {
   const params = useTypedParams(
@@ -75,12 +77,15 @@ export function MarkdownEditor({
     if (textAreaElement) {
       setTextAreaHeight(textAreaElement.offsetHeight);
       observer.observe(textAreaElement);
+      const controller = new AbortController();
+      if (tabToIndent) enableTabToIndent(textAreaElement, controller.signal);
 
       return () => {
         observer.unobserve(textAreaElement);
+        controller.abort();
       };
     }
-  }, [selectedTab]);
+  }, [selectedTab, tabToIndent]);
 
   function pasteLinkToTextarea(text: string) {
     const textArea = textAreaRef.current;
@@ -121,10 +126,11 @@ export function MarkdownEditor({
         <div className={clsx("flex flex-col border border-neutral rounded-md")}>
           <Tabs.Root
             value={selectedTab}
+            activationMode="manual"
             onValueChange={(tab) => {
               setSelectedTab(tab as TabValue);
               if (textAreaRef.current) {
-                const lastTextContent = textAreaRef.current.value.trim();
+                const lastTextContent = textAreaRef.current.value;
                 setLastSavedTextContent(lastTextContent);
                 addPromise(lastTextContent);
 
@@ -135,41 +141,40 @@ export function MarkdownEditor({
               }
             }}
           >
-            <Tabs.List className="flex text-sm items-stretch bg-ghost/40">
-              <Tabs.Trigger
-                value={TABS.EDITOR}
-                className={clsx(
-                  "px-3 py-2 border-b border-neutral",
-                  "aria-[selected=true]:rounded-t-md aria-[selected=true]:border",
-                  "aria-[selected=true]:border-b-0 aria-[selected=true]:border-l-0",
-                  "aria-[selected=true]:bg-backdrop"
-                )}
-                onFocus={() => {
-                  textAreaRef.current?.focus();
-                  const { start, end } = lastTextareaSelectionRange.current;
-                  textAreaRef.current?.setSelectionRange(start, end);
-                }}
+            <div className="flex items-stretch bg-ghost/40">
+              <Tabs.List
+                aria-label="Markdown editor"
+                className="flex shrink-0 text-sm"
               >
-                Write
-              </Tabs.Trigger>
-              <Tabs.Trigger
-                value={TABS.PREVIEW}
-                onMouseEnter={() => {
-                  const textContent = textAreaRef.current?.value.trim();
-                  if (textContent) {
-                    addPromise(textContent);
-                  }
-                }}
-                className={clsx(
-                  "px-3 py-2 border-b border-neutral",
-                  "aria-[selected=true]:rounded-t-md aria-[selected=true]:border",
-                  "aria-[selected=true]:border-b-0",
-                  "aria-[selected=true]:bg-backdrop"
-                )}
-              >
-                Preview
-              </Tabs.Trigger>
-
+                <Tabs.Trigger
+                  value={TABS.EDITOR}
+                  className={clsx(
+                    "px-3 py-2 border-b border-neutral",
+                    "aria-[selected=true]:rounded-t-md aria-[selected=true]:border",
+                    "aria-[selected=true]:border-b-0 aria-[selected=true]:border-l-0",
+                    "aria-[selected=true]:bg-backdrop"
+                  )}
+                >
+                  Write
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                  value={TABS.PREVIEW}
+                  onMouseEnter={() => {
+                    const textContent = textAreaRef.current?.value;
+                    if (textContent?.trim()) {
+                      addPromise(textContent);
+                    }
+                  }}
+                  className={clsx(
+                    "px-3 py-2 border-b border-neutral",
+                    "aria-[selected=true]:rounded-t-md aria-[selected=true]:border",
+                    "aria-[selected=true]:border-b-0",
+                    "aria-[selected=true]:bg-backdrop"
+                  )}
+                >
+                  Preview
+                </Tabs.Trigger>
+              </Tabs.List>
               <MarkdownEditorToolbar
                 showItems={selectedTab === "EDITOR"}
                 textAreaRef={textAreaRef}
@@ -179,10 +184,10 @@ export function MarkdownEditor({
                   }
                 }}
               />
-            </Tabs.List>
+            </div>
 
             <div className="p-2 bg-backdrop rounded-b-md">
-              <Tabs.Content value={TABS.EDITOR} asChild>
+              <Tabs.Content value={TABS.EDITOR}>
                 <Textarea
                   rows={12}
                   {...props}
@@ -198,11 +203,17 @@ export function MarkdownEditor({
                   className="text-sm"
                   name={selectedTab === "EDITOR" ? props.name : ""}
                   hideLabel
-                  ref={(ref) => {
-                    textAreaRef.current = ref;
-                    if (ref) {
-                      enableTabToIndent(ref);
+                  ref={textAreaRef}
+                  onFocus={(event) => {
+                    const { start, end } = lastTextareaSelectionRange.current;
+                    if (start !== -1) {
+                      event.currentTarget.setSelectionRange(start, end);
+                      lastTextareaSelectionRange.current = {
+                        start: -1,
+                        end: -1
+                      };
                     }
+                    props.onFocus?.(event);
                   }}
                   style={{
                     height: textAreaHeight > 0 ? `${textAreaHeight}px` : "auto"
@@ -214,7 +225,7 @@ export function MarkdownEditor({
                 style={{
                   minHeight: `${textAreaHeight}px`
                 }}
-                className="text-sm px-3 py-1 max-w-full overflow-auto min-w-0 data-[state=active]:flex items-stretch justify-stretch"
+                className="text-sm px-3 py-1 max-w-full overflow-auto min-w-0 space-y-2"
               >
                 {/* 
                   We do this because radix will not show the contents of the tab in DOM if it is not selected, 
@@ -229,9 +240,17 @@ export function MarkdownEditor({
                 />
 
                 {lastSavedTextContent.trim().length > 0 && lastRenderPromise ? (
-                  <MarkdownEditorPreview renderedMarkdown={lastRenderPromise} />
+                  <MarkdownEditorPreview
+                    key={lastSavedTextContent}
+                    renderedMarkdown={lastRenderPromise}
+                  />
                 ) : (
                   <span>Nothing to preview</span>
+                )}
+                {props.validationStatus === "error" && props.validationText && (
+                  <p role="alert" className="text-danger">
+                    {props.validationText}
+                  </p>
                 )}
               </Tabs.Content>
             </div>
@@ -253,7 +272,7 @@ export function MarkdownEditor({
                 />
               )}
             >
-              <span>Markdown is suppported</span>
+              <span>Markdown is supported</span>
             </Button>
           </div>
         </div>
@@ -274,13 +293,20 @@ function usePromiseRenderMap(
   const addPromise = React.useCallback(
     (newContent: string) => {
       const map = promiseRenderMapRef.current;
-      if (!map.has(newContent)) {
-        const promise = renderPromise(newContent);
-        map.set(newContent, promise);
-        setLastRenderPromise(promise);
-      } else {
-        setLastRenderPromise(map.get(newContent) ?? null);
+      if (!newContent.trim()) return;
+      const existing = map.get(newContent);
+      if (existing) {
+        setLastRenderPromise(existing);
+        return;
       }
+      // Reuse the most recent preview without retaining older drafts.
+      map.clear();
+      const promise = renderPromise(newContent);
+      map.set(newContent, promise);
+      void promise.catch(() => {
+        if (map.get(newContent) === promise) map.delete(newContent);
+      });
+      setLastRenderPromise(promise);
     },
     [renderPromise]
   );

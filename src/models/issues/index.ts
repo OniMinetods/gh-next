@@ -166,8 +166,18 @@ export async function getMultipleIssuesPerRepositories(
     no: string;
   }[]
 ) {
-  if (payload.length === 0) return [];
+  const references = new Map<string, [string, string, number]>();
+  for (const { user, project, no } of payload) {
+    const number = Number(no);
+    if (!Number.isInteger(number) || number <= 0 || number > 2_147_483_647) continue;
+    const key = `${user.toLowerCase()}/${project.toLowerCase()}/${number}`;
+    references.set(key, [user.toLowerCase(), project.toLowerCase(), number]);
+  }
+  if (references.size === 0) return [];
 
+  const tuples = [...references.values()].map(
+    ([user, project, number]) => sql`(${user}, ${project}, ${number})`
+  );
   const owner = alias(users, "owner");
 
   const issueList = await db
@@ -188,9 +198,7 @@ export async function getMultipleIssuesPerRepositories(
     .where(
       and(
         publicIssueRepository,
-        sql`${issues.number} in ${payload.map((p) => Number(p.no))}`,
-        sql`${repositories.name} in ${payload.map((p) => p.project)}`,
-        sql`${owner.username} in ${payload.map((p) => p.user)}`
+        sql`(lower(${owner.username}), lower(${repositories.name}), ${issues.number}) in (${sql.join(tuples, sql`, `)})`
       )
     );
 

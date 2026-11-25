@@ -27,6 +27,7 @@ export function MarkdownCodeBlock({
           className={clsx(className, "transition duration-150")}
           variant="subtle"
           type="button"
+          aria-label="Copy code"
           onClick={() => {
             navigator.clipboard.writeText(codeStr).then(() => {
               // show pending state (which is success state), until the user has stopped clicking the button

@@ -12,63 +12,49 @@ import { Avatar } from "~/components/avatar";
 import { IssueHoverCardLink } from "~/components/hovercard/issue-hovercard-link";
 import Link from "next/link";
 
-// utils
 import { env } from "~/env";
 import { clsx, getExcerpt, isValidURL } from "~/lib/shared/utils.shared";
-import { z } from "zod";
-
-// types
+import type { BuildUrlValues } from "remark-github";
 import type { IssueQueryResult } from "~/models/issues";
 import type { UserQueryResult } from "~/models/user";
 
+export type Reference = Exclude<BuildUrlValues, { type: "compare" }>;
+
 export type ResolvedReferences = {
-  issues: Record<number, IssueQueryResult>;
-  mentions: Record<string, UserQueryResult>;
+  issues: Map<string, IssueQueryResult>;
+  mentions: Map<string, UserQueryResult>;
 };
+
+export function issueReferenceKey(
+  owner: string,
+  repository: string,
+  number: number
+) {
+  return `${owner}/${repository}/${number}`.toLowerCase();
+}
 
 type MarkdownAProps = {
   resolvedReferences: ResolvedReferences;
   currentRepository: string;
+  reference?: Reference;
 } & React.ComponentProps<"a">;
 
-export async function MarkdownA({
+export function MarkdownA({
   resolvedReferences,
   currentRepository,
+  reference: referenceFound,
   ...props
 }: MarkdownAProps) {
-  let isExternal = true;
-  let referenceFound: Reference | null = null;
-  if (props.href) {
+  if (!referenceFound) {
+    if (!props.href) return <span>{props.children}</span>;
+    let external;
     try {
-      const url = new URL(props.href, env.NEXT_PUBLIC_VERCEL_URL);
-      const baseURL = new URL(env.NEXT_PUBLIC_VERCEL_URL);
-      isExternal = url.hostname !== baseURL.hostname;
-
-      const parseResult = ReferenceSchema.safeParse(
-        [...url.searchParams.keys()].reduce(
-          (acc, key) => {
-            const value = url.searchParams.get(key);
-
-            if (value) {
-              acc[key] = value;
-            }
-            return acc;
-          },
-          {} as Record<string, string>
-        )
-      );
-
-      if (parseResult.success) {
-        referenceFound = parseResult.data;
-        Object.keys(referenceFound).map((key) => url.searchParams.delete(key));
-        props.href = url.toString();
-      }
-    } catch (error) {
-      // do nothing
+      const base = new URL(env.NEXT_PUBLIC_VERCEL_URL);
+      external = new URL(props.href, base).origin !== base.origin;
+    } catch {
+      return <span>{props.children}</span>;
     }
-  }
 
-  if (isExternal || !referenceFound) {
     const children =
       typeof props.children === "string" && isValidURL(props.children)
         ? getExcerpt(props.children, 150)
@@ -76,7 +62,8 @@ export async function MarkdownA({
     return (
       <a
         {...props}
-        target="_blank"
+        target={external ? "_blank" : undefined}
+        rel={external ? "noreferrer" : undefined}
         className="underline inline-flex gap-1 items-baseline text-accent break-all"
       >
         {children}
@@ -85,7 +72,13 @@ export async function MarkdownA({
   }
 
   if (referenceFound.type === "issue") {
-    const issueFound = resolvedReferences.issues[Number(referenceFound.no)];
+    const issueFound = resolvedReferences.issues.get(
+      issueReferenceKey(
+        referenceFound.user,
+        referenceFound.project,
+        Number(referenceFound.no)
+      )
+    );
     const repository = `${referenceFound.user}/${referenceFound.project}`;
 
     if (!issueFound) {
@@ -94,9 +87,9 @@ export async function MarkdownA({
 
     return (
       <IssueHoverCardLink
-        href={props.href!}
-        user={referenceFound.user}
-        repository={referenceFound.project}
+        href={`/${encodeURIComponent(issueFound.repository_owner)}/${encodeURIComponent(issueFound.repository_name)}/issues/${issueFound.number}`}
+        user={issueFound.repository_owner}
+        repository={issueFound.repository_name}
         no={Number(referenceFound.no)}
         className={clsx(
           "underline inline-flex gap-1 items-baseline text-accent",
@@ -127,8 +120,9 @@ export async function MarkdownA({
   }
 
   if (referenceFound.type === "mention") {
-    const userFound =
-      resolvedReferences.mentions[referenceFound.user.toLowerCase()];
+    const userFound = resolvedReferences.mentions.get(
+      referenceFound.user.toLowerCase()
+    );
 
     if (!userFound) {
       return <span>{props.children}</span>;
@@ -172,49 +166,5 @@ export async function MarkdownA({
     return <span>{props.children}</span>;
   }
 
-  return (
-    <a
-      {...props}
-      className="inline-flex gap-1 items-baseline text-accent underline"
-    >
-      {props.children}
-    </a>
-  );
+  return <span>{props.children}</span>;
 }
-
-/**
- * These build URL values from the package 'remark-github' these correspond
- * to the linked issues, commits & mentions
- */
-const CommitReferenceSchema = z.object({
-  hash: z.string(),
-  project: z.string(),
-  type: z.literal("commit"),
-  user: z.string()
-});
-
-export type CommitReference = z.TypeOf<typeof CommitReferenceSchema>;
-
-const IssueReferenceSchema = z.object({
-  no: z.string(),
-  project: z.string(),
-  type: z.literal("issue"),
-  user: z.string()
-});
-
-export type IssueReference = z.TypeOf<typeof IssueReferenceSchema>;
-
-const MentionReferenceSchema = z.object({
-  type: z.literal("mention"),
-  user: z.string()
-});
-
-export type MentionReference = z.TypeOf<typeof MentionReferenceSchema>;
-
-const ReferenceSchema = z.union([
-  CommitReferenceSchema,
-  IssueReferenceSchema,
-  MentionReferenceSchema
-]);
-
-export type Reference = z.TypeOf<typeof ReferenceSchema>;

@@ -3,6 +3,7 @@ import "server-only";
 // components
 import { MarkdownTitle } from "~/components/markdown/markdown-title";
 import { Markdown } from "~/components/markdown/markdown";
+import { CommentList } from "~/components/comments/comment-list";
 
 // utils
 import { notFound } from "next/navigation";
@@ -18,10 +19,15 @@ type IssueDetailPageProps = PageProps<{
   user: string;
   repository: string;
   number: string;
+}, {
+  cursor: string;
+  comment: string;
+  deleted: string;
+  hidden: string;
 }>;
 
 const issueParamsSchema = z.object({
-  number: preprocess((arg) => Number(arg), z.number()),
+  number: preprocess((arg) => Number(arg), z.number().int().positive().max(2_147_483_647)),
   user: z.string().min(1),
   repository: z.string().min(1)
 });
@@ -51,7 +57,8 @@ export async function generateMetadata({
 }
 
 export default async function IssueDetailPage({
-  params
+  params,
+  searchParams
 }: IssueDetailPageProps) {
   const paramsResult = issueParamsSchema.safeParse(params);
 
@@ -88,32 +95,10 @@ export default async function IssueDetailPage({
             updatedAt: issue.updated_at
           })}
           content={issue.body}
+          repository={`${user}/${repo}`}
         />
-        {/* <Cache id={"issue-test"} bypassInDEV>
-          <Markdown
-            content={`
-## Some references:
-
-*   Commit: f8083175fe890cbf14f41d0a06e7aa35d4989587
-*   Commit (fork): foo@f8083175fe890cbf14f41d0a06e7aa35d4989587
-*   Commit (repo): remarkjs/remark@e1aa9f6c02de18b9459b7d269712bcb50183ce89
-*   Issue or PR (\`#\`): #48748
-*   Issue or PR (\`GH-\`): GH-42991
-*   Issue or PR (fork): foo#1
-*   Issue or PR (project): remarkjs/remark#1
-*   Mention: @fredkiss3, @BeardedBear, @alvarlagerlof, @fredk3
-*   Issue or PR (link) : https://gh.fredkiss.dev/Fredkiss3/gh-next/issues/42991
-- feat: support excluded paths by @fredkiss3 in #25
-- fix(multiple-dependency-versions): increase versions padding by @fredkiss3 in #26
-- feat: new non-existant-packages rule by @fredkiss3 in #27
-- fix(types-in-dependencies): autofix when package doesn't have devDependencies by @fredkiss3 in #28
-- fix(multiple-dependency-versions): improve formatting for single packages by @fredkiss3 in #29
-- feat: autofix non-existant-packages by @fredkiss3 in #30
-- feat: autofix packages-without-package-json by @fredkiss3 in #31
-`}
-          />
-        </Cache> */}
       </section>
+      <CommentList issueId={issue.id} searchParams={searchParams} />
     </div>
   );
 }
