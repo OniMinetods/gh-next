@@ -4,13 +4,8 @@ import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { env } from "~/env";
 import { SHARED_KEY_PREFIX } from "~/lib/shared/constants";
-import {
-  getUserById,
-  getOrInsertUserFromGithubProfile,
-  githubUserSchema
-} from "~/models/user";
+import { getUserById } from "~/models/user";
 import { experimental_taintObjectReference as taintObjectReference } from "react";
-import { revalidatePath } from "next/cache";
 import { withAuth, type AuthState } from "./middlewares";
 import { nanoid } from "nanoid";
 import { kv } from "~/lib/server/kv/index.server";
@@ -67,40 +62,6 @@ export const logoutUser = withAuth(async function logoutUser({
 
   cookies().set(newSession.getCookie());
 });
-
-export async function loginUser(user: any) {
-  const sessionResult = githubUserSchema.safeParse(user);
-  if (!sessionResult.success) {
-    console.error(sessionResult.error);
-    const session = await getSession();
-
-    await session.addFlash({
-      type: "error",
-      message: "An unexpected error happenned on authentication, please retry"
-    });
-
-    return revalidatePath(`/`);
-  }
-
-  // Set cookie to authenticate user
-  // Stay connected for 2 days
-  const expirationDate = new Date();
-  expirationDate.setDate(expirationDate.getDate() + 2);
-
-  // Find or create the corresponding user in DB
-  const ghUser = sessionResult.data;
-
-  const [dbUser] = await getOrInsertUserFromGithubProfile(ghUser);
-
-  const session = await getSession();
-  await session.generateForUser(dbUser);
-
-  await session.addFlash({
-    type: "success",
-    message: "Logged in successfully."
-  });
-  cookies().set(session.getCookie());
-}
 
 export const getUserOrRedirect = cache(async function getUserOrRedirect(
   redirectToPath?: string

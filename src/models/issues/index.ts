@@ -6,6 +6,11 @@ import { issueToAssignees, issues } from "~/lib/server/db/schema/issue.sql";
 import { nextCache } from "~/lib/server/rsc-utils.server";
 import { users, type User } from "~/lib/server/db/schema/user.sql";
 import { comments } from "~/lib/server/db/schema/comment.sql";
+import {
+  publicIssueRepository,
+  visibleComment,
+  visibleIssueMention
+} from "~/models/comments/access";
 import { UN_MATCHABLE_USERNAME } from "~/lib/shared/constants";
 import { issueUserMentions } from "~/lib/server/db/schema/mention.sql";
 import { repositories } from "~/lib/server/db/schema/repository.sql";
@@ -21,7 +26,8 @@ export async function getOpenIssuesCount() {
           count: sql<number>`count(*)`.mapWith(Number)
         })
         .from(issues)
-        .where(eq(issues.status, "OPEN"));
+        .innerJoin(repositories, eq(issues.repository_id, repositories.id))
+        .where(and(eq(issues.status, "OPEN"), publicIssueRepository));
       return count.count;
     },
     {
@@ -121,6 +127,7 @@ const creator = alias(users, "creator");
 
 const singleIssuePrepared = db
   .select({
+    id: issues.id,
     title: issues.title,
     body: issues.body,
     updated_at: issues.updated_at,
@@ -131,6 +138,7 @@ const singleIssuePrepared = db
   .innerJoin(creator, eq(repositories.creator_id, creator.id))
   .where(
     and(
+      publicIssueRepository,
       eq(repositories.name, sql.placeholder("repository_name")),
       eq(creator.username, sql.placeholder("repository_creator")),
       eq(issues.number, sql.placeholder("issue_number"))
@@ -179,6 +187,7 @@ export async function getMultipleIssuesPerRepositories(
     .leftJoin(users, eq(users.id, issues.author_id))
     .where(
       and(
+        publicIssueRepository,
         sql`${issues.number} in ${payload.map((p) => Number(p.no))}`,
         sql`${repositories.name} in ${payload.map((p) => p.project)}`,
         sql`${owner.username} in ${payload.map((p) => p.user)}`
@@ -228,9 +237,12 @@ export async function getSingleIssueWithLabelAndUser(
     })
     .from(comments)
     .where(
-      eq(
-        comments.author_username,
-        currentUser?.username ?? UN_MATCHABLE_USERNAME
+      and(
+        visibleComment,
+        eq(
+          comments.author_username,
+          currentUser?.username ?? UN_MATCHABLE_USERNAME
+        )
       )
     )
     .as("issue_commented");
@@ -266,6 +278,7 @@ export async function getSingleIssueWithLabelAndUser(
       issueUserMentions,
       and(
         eq(issues.id, issueUserMentions.issue_id),
+        visibleIssueMention,
         eq(
           issueUserMentions.username,
           currentUser?.username ?? UN_MATCHABLE_USERNAME
@@ -278,6 +291,7 @@ export async function getSingleIssueWithLabelAndUser(
     )
     .where(
       and(
+        publicIssueRepository,
         eq(issues.number, payload.no),
         eq(repositories.name, payload.project),
         eq(owner.username, payload.user)

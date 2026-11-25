@@ -26,6 +26,17 @@ export const CacheKeys = {
     props.repo,
     props.number
   ],
+  commentMarkdown: (
+    repositoryId: number,
+    commentId: number,
+    version: number
+  ) => [
+    "COMMENT_MARKDOWN",
+    1, // Safe Markdown policy version.
+    repositoryId,
+    commentId,
+    version
+  ],
   geo: (ip: string) => ["GEO", ip],
   markdownPreview: (props: {
     repositoryPath: `${string}/${string}`;

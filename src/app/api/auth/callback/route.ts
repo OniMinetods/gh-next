@@ -1,5 +1,11 @@
 import { redirect } from "next/navigation";
-import { loginUser } from "~/actions/auth.action";
+import { cookies } from "next/headers";
+import { revalidatePath } from "next/cache";
+import { getSession } from "~/actions/session.action";
+import {
+  getOrInsertUserFromGithubProfile,
+  githubUserSchema
+} from "~/models/user";
 import { env } from "~/env";
 import { kv } from "~/lib/server/kv/index.server";
 import type { NextRequest } from "next/server";
@@ -7,6 +13,35 @@ import { SHARED_KEY_PREFIX } from "~/lib/shared/constants";
 
 export const fetchCache = "force-no-store";
 export const revalidate = 0;
+
+async function loginUser(user: unknown) {
+  const sessionResult = githubUserSchema.safeParse(user);
+  if (!sessionResult.success) {
+    console.error(sessionResult.error);
+    const session = await getSession();
+
+    await session.addFlash({
+      type: "error",
+      message: "An unexpected error happenned on authentication, please retry"
+    });
+
+    return revalidatePath(`/`);
+  }
+
+  // Find or create the corresponding user in DB
+  const ghUser = sessionResult.data;
+
+  const [dbUser] = await getOrInsertUserFromGithubProfile(ghUser);
+
+  const session = await getSession();
+  await session.generateForUser(dbUser);
+
+  await session.addFlash({
+    type: "success",
+    message: "Logged in successfully."
+  });
+  cookies().set(session.getCookie());
+}
 
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code");

@@ -1,10 +1,12 @@
 import "server-only";
-import { sql, eq, ilike, or, and, not, desc, asc } from "drizzle-orm";
+import { sql, eq, ilike, or, and, not, desc, asc, exists } from "drizzle-orm";
 import { db } from "~/lib/server/db/index.server";
+import { comments } from "~/lib/server/db/schema/comment.sql";
 import {
-  comments,
-  commentsCountPerIssue
-} from "~/lib/server/db/schema/comment.sql";
+  publicIssueRepository,
+  visibleComment,
+  visibleIssueMention
+} from "~/models/comments/access";
 import {
   issues,
   issueToAssignees,
@@ -44,14 +46,22 @@ export async function searchIssues(
     })
     .from(comments)
     .where(
-      eq(
-        comments.author_username,
-        currentUser?.username ?? UN_MATCHABLE_USERNAME
+      and(
+        visibleComment,
+        eq(
+          comments.author_username,
+          currentUser?.username ?? UN_MATCHABLE_USERNAME
+        )
       )
     )
     .as("issue_commented");
 
   const owner = alias(users, "owner");
+  const commentCount = sql`(
+    select count(*) from ${comments} where ${eq(comments.issue_id, issues.id)} and ${visibleComment}
+  )`
+    .mapWith(Number)
+    .as("comment_count");
   let issueQuery = db
     .selectDistinct({
       id: issues.id,
@@ -70,10 +80,7 @@ export async function searchIssues(
         id: users.id,
         location: users.location
       },
-      no_of_comments:
-        sql<number>`COALESCE(${commentsCountPerIssue.comment_count}, 0)`
-          .mapWith(Number)
-          .as("comment_count"),
+      no_of_comments: commentCount,
       plus_one_count: reactionsCountPerIssue.plus_one_count,
       minus_one_count: reactionsCountPerIssue.minus_one_count,
       confused_count: reactionsCountPerIssue.confused_count,
@@ -91,11 +98,7 @@ export async function searchIssues(
     .innerJoin(repositories, eq(issues.repository_id, repositories.id))
     .innerJoin(owner, eq(repositories.creator_id, owner.id))
     .leftJoin(users, eq(users.id, issues.author_id))
-    .leftJoin(comments, eq(comments.issue_id, issues.id))
-    .leftJoin(
-      commentsCountPerIssue,
-      eq(commentsCountPerIssue.issue_id, issues.id)
-    )
+
     .leftJoin(
       reactionsCountPerIssue,
       eq(reactionsCountPerIssue.issue_id, issues.id)
@@ -104,6 +107,7 @@ export async function searchIssues(
       issueUserMentions,
       and(
         eq(issues.id, issueUserMentions.issue_id),
+        visibleIssueMention,
         eq(
           issueUserMentions.username,
           currentUser?.username ?? UN_MATCHABLE_USERNAME
@@ -114,7 +118,12 @@ export async function searchIssues(
       issueWhereUserCommentedSubQuery,
       eq(issues.id, issueWhereUserCommentedSubQuery.issue_id)
     )
-    .where(issueSearchfiltersToSQLConditions(filters, true, currentUser));
+    .where(
+      and(
+        publicIssueRepository,
+        issueSearchfiltersToSQLConditions(filters, true, currentUser)
+      )
+    );
 
   let orderBy: SQL<unknown>;
   switch (filters.sort) {
@@ -128,10 +137,10 @@ export async function searchIssues(
       orderBy = desc(issues.updated_at);
       break;
     case "comments-asc":
-      orderBy = asc(commentsCountPerIssue.comment_count);
+      orderBy = asc(commentCount);
       break;
     case "comments-desc":
-      orderBy = desc(commentsCountPerIssue.comment_count);
+      orderBy = desc(commentCount);
       break;
     case "reactions-+1-desc":
       orderBy = sql`${reactionsCountPerIssue.plus_one_count} DESC NULLS LAST`;
@@ -161,7 +170,7 @@ export async function searchIssues(
       orderBy = sql`${issues.created_at} DESC NULLS LAST`;
       break;
   }
-  issueQuery = issueQuery.orderBy(orderBy);
+  issueQuery = issueQuery.orderBy(orderBy, asc(issues.id));
 
   if (process.env.NODE_ENV === "development") {
     console.log({
@@ -262,7 +271,20 @@ function issueSearchfiltersToSQLConditions(
       inFilters.push(ilike(issues.body, searchQuery));
     }
     if (filters.in.has("comments")) {
-      inFilters.push(ilike(comments.content, searchQuery));
+      inFilters.push(
+        exists(
+          db
+            .select({ id: comments.id })
+            .from(comments)
+            .where(
+              and(
+                eq(comments.issue_id, issues.id),
+                visibleComment,
+                ilike(comments.content, searchQuery)
+              )
+            )
+        )
+      );
     }
     queryFilters = or(...inFilters);
   }
@@ -490,7 +512,12 @@ function issueSearchfiltersToSQLConditions(
         })
         .from(issueUserMentions)
         .rightJoin(issues, eq(issueUserMentions.issue_id, issues.id))
-        .where(eq(issueUserMentions.username, mentionnedUser))
+        .where(
+          and(
+            eq(issueUserMentions.username, mentionnedUser),
+            visibleIssueMention
+          )
+        )
         .as("mentionSubQuery");
       const mentionSubQueryOnlyID = db
         .select({ issue_id: mentionSubQuery.issue_id })
@@ -520,7 +547,12 @@ function issueSearchfiltersToSQLConditions(
         })
         .from(issueUserMentions)
         .rightJoin(issues, eq(issueUserMentions.issue_id, issues.id))
-        .where(eq(issueUserMentions.username, mentionnedUser))
+        .where(
+          and(
+            eq(issueUserMentions.username, mentionnedUser),
+            visibleIssueMention
+          )
+        )
         .as("mentionSubQuery");
 
       const mentionSubQueryOnlyID = db
@@ -578,9 +610,9 @@ async function getStatsForIssueSearch(
     })
     .from(issues)
     .leftJoin(users, eq(users.id, issues.author_id))
-    .leftJoin(comments, eq(comments.issue_id, issues.id))
+    .innerJoin(repositories, eq(issues.repository_id, repositories.id))
     .leftJoin(labelToIssues, eq(labelToIssues.issue_id, issues.id))
-    .where(queryFilters)
+    .where(and(publicIssueRepository, queryFilters))
     .groupBy(issues.id)
     .as("stats");
 

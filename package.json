@@ -10,6 +10,7 @@
     "lint": "next lint",
     "test": "pnpm run test:unit && pnpm run test:e2e",
     "test:unit": "vitest run",
+    "test:integration": "vitest run --mode integration",
     "test:e2e": "playwright test",
     "postinstall": "next telemetry disable",
     "db:generate": "set -a; . ./.env.local; set +a && drizzle-kit generate:pg",

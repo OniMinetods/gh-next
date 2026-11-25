@@ -540,6 +540,13 @@
       "when": 1795614755511,
       "tag": "0076_harsh_golden_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "5",
+      "when": 1795615480374,
+      "tag": "0077_clammy_domino",
+      "breakpoints": true
     }
   ]
 }

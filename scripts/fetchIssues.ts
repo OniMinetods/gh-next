@@ -47,6 +47,7 @@ import { remark } from "remark";
 import remarkGfm from "remark-gfm";
 import remarkGithub from "remark-github";
 import { VFile } from "vfile";
+import { importEmptyIssueDiscussion } from "./issue-discussion-import";
 
 const db = drizzle(postgres(process.env.DATABASE_URL!));
 
@@ -774,318 +775,307 @@ async function insertSingleIssue(issue: GithubIssue) {
 
   console.log(`\nInserting events for issue \x1b[34m${issue.number}\x1b[37m`);
 
-  // delete all comments from issue
-  await db
-    .delete(comments)
-    .where(eq(comments.issue_id, issueInsertQueryResult.issue_id));
+  const imported = await importEmptyIssueDiscussion(
+    db,
+    issueInsertQueryResult.issue_id,
+    async (db) => {
+      let nextEventsCursor: string | null = null;
+      let eventsHasNextPage = true;
+      let totalNumberOfEvents = 0;
 
-  // delete all events from issue
-  await db
-    .delete(issueEvents)
-    .where(eq(issueEvents.issue_id, issueInsertQueryResult.issue_id));
+      while (eventsHasNextPage) {
+        /**
+         * INSERTING EVENTS
+         */
+        const eventResponse: EventsResponse = await fetchFromGithubAPI(
+          eventsQuery,
+          {
+            repoOwner: GITHUB_REPO_SOURCE.owner,
+            repoName: GITHUB_REPO_SOURCE.name,
+            cursor: nextEventsCursor,
+            issue_number: issue.number
+          }
+        );
 
-  let nextEventsCursor: string | null = null;
-  let eventsHasNextPage = true;
-  let totalNumberOfEvents = 0;
+        if (!eventResponse.repository.issue) break;
 
-  while (eventsHasNextPage) {
-    /**
-     * INSERTING EVENTS
-     */
-    const eventResponse: EventsResponse = await fetchFromGithubAPI(
-      eventsQuery,
-      {
-        repoOwner: GITHUB_REPO_SOURCE.owner,
-        repoName: GITHUB_REPO_SOURCE.name,
-        cursor: nextEventsCursor,
-        issue_number: issue.number
-      }
-    );
+        nextEventsCursor =
+          eventResponse.repository.issue.timelineItems.pageInfo.endCursor;
+        eventsHasNextPage =
+          eventResponse.repository.issue.timelineItems.pageInfo.hasNextPage;
 
-    if (!eventResponse.repository.issue) continue;
+        const eventsToInsert: IssueEventInsert[] = [];
+        for (const event of eventResponse.repository.issue.timelineItems
+          .nodes) {
+          totalNumberOfEvents++;
+          let currentUser: User | null | undefined = null;
 
-    nextEventsCursor =
-      eventResponse.repository.issue.timelineItems.pageInfo.endCursor;
-    eventsHasNextPage =
-      eventResponse.repository.issue.timelineItems.pageInfo.hasNextPage;
+          if (event.actor) {
+            // Faker seed so that it generates the same login for the same user
+            faker.seed(stringToNumber(event.actor.login));
+            // if the user is in our DB, use that instead of a generated username & avatar url
+            const dbUser = await db
+              .select()
+              .from(users)
+              .where(sql`${users.username} = ${event.actor.login}`);
+            currentUser = dbUser[0];
+          }
 
-    const eventsToInsert: IssueEventInsert[] = [];
-    for (const event of eventResponse.repository.issue.timelineItems.nodes) {
-      totalNumberOfEvents++;
-      let currentUser: User | null | undefined = null;
+          const eventTypeMapping = {
+            AssignedEvent: "ASSIGN_USER",
+            ClosedEvent: "TOGGLE_STATUS",
+            ReopenedEvent: "TOGGLE_STATUS",
+            CrossReferencedEvent: "ISSUE_MENTION",
+            RenamedTitleEvent: "CHANGE_TITLE",
+            IssueComment: "ADD_COMMENT",
+            UnlabeledEvent: "REMOVE_LABEL",
+            LabeledEvent: "ADD_LABEL"
+          } satisfies Record<typeof event.__typename, EventType>;
 
-      if (event.actor) {
-        // Faker seed so that it generates the same login for the same user
-        faker.seed(stringToNumber(event.actor.login));
-        // if the user is in our DB, use that instead of a generated username & avatar url
-        const dbUser = await db
-          .select()
-          .from(users)
-          .where(sql`${users.username} = ${event.actor.login}`);
-        currentUser = dbUser[0];
-      }
+          let eventPayload: IssueEventInsert = {
+            issue_id: issueInsertQueryResult.issue_id,
+            initiator_id: currentUser ? currentUser.id : null,
+            initiator_username: currentUser
+              ? currentUser.username
+              : faker.internet.userName().replaceAll(".", "_").toLowerCase(),
+            initiator_avatar_url: currentUser
+              ? currentUser.avatar_url
+              : faker.image.avatarGitHub(),
+            type: eventTypeMapping[event.__typename],
+            created_at: new Date(event.createdAt)
+          };
 
-      const eventTypeMapping = {
-        AssignedEvent: "ASSIGN_USER",
-        ClosedEvent: "TOGGLE_STATUS",
-        ReopenedEvent: "TOGGLE_STATUS",
-        CrossReferencedEvent: "ISSUE_MENTION",
-        RenamedTitleEvent: "CHANGE_TITLE",
-        IssueComment: "ADD_COMMENT",
-        UnlabeledEvent: "REMOVE_LABEL",
-        LabeledEvent: "ADD_LABEL"
-      } satisfies Record<typeof event.__typename, EventType>;
+          if (event.__typename === "IssueComment") {
+            const comment = event;
+            if (!comment.actor) {
+              continue;
+            }
 
-      let eventPayload: IssueEventInsert = {
-        issue_id: issueInsertQueryResult.issue_id,
-        initiator_id: currentUser ? currentUser.id : null,
-        initiator_username: currentUser
-          ? currentUser.username
-          : faker.internet.userName().replaceAll(".", "_").toLowerCase(),
-        initiator_avatar_url: currentUser
-          ? currentUser.avatar_url
-          : faker.image.avatarGitHub(),
-        type: eventTypeMapping[event.__typename],
-        created_at: new Date(event.createdAt)
-      };
+            // Faker so that it generates the same login for the same user
+            faker.seed(stringToNumber(comment.actor.login));
 
-      if (event.__typename === "IssueComment") {
-        const comment = event;
-        if (!comment.actor) {
-          continue;
-        }
+            // if the user is in our DB, use that instead of a generated username & avatar url
+            const dbUser = await db
+              .select()
+              .from(users)
+              .where(sql`${users.username} = ${comment.actor.login}`);
 
-        // Faker so that it generates the same login for the same user
-        faker.seed(stringToNumber(comment.actor.login));
+            const currentUser = dbUser[0];
+            const commentPayload = {
+              content: comment.body,
+              issue_id: issueInsertQueryResult.issue_id,
+              author_id: currentUser ? currentUser.id : null,
+              author_username: currentUser
+                ? currentUser.username
+                : faker.internet.userName().replaceAll(".", "_").toLowerCase(),
+              author_avatar_url: currentUser
+                ? currentUser.avatar_url
+                : faker.image.avatarGitHub(),
+              created_at: new Date(comment.createdAt)
+            } satisfies CommentInsert;
 
-        // if the user is in our DB, use that instead of a generated username & avatar url
-        const dbUser = await db
-          .select()
-          .from(users)
-          .where(sql`${users.username} = ${comment.actor.login}`);
+            const [commentInsertQueryResult] = await db
+              .insert(comments)
+              .values(commentPayload)
+              .returning({
+                comment_id: comments.id
+              });
 
-        const currentUser = dbUser[0];
-        const commentPayload = {
-          content: comment.body,
-          issue_id: issueInsertQueryResult.issue_id,
-          author_id: currentUser ? currentUser.id : null,
-          author_username: currentUser
-            ? currentUser.username
-            : faker.internet.userName().replaceAll(".", "_").toLowerCase(),
-          author_avatar_url: currentUser
-            ? currentUser.avatar_url
-            : faker.image.avatarGitHub(),
-          created_at: new Date(comment.createdAt)
-        } satisfies CommentInsert;
+            const preprocessedCommentBody = await remark()
+              .use(remarkGfm)
+              .use(remarkGithub, {
+                repository: `${GITHUB_AUTHOR_USERNAME}/${GITHUB_REPOSITORY_NAME}`,
+                mentionStrong: false,
+                replaceFullLinks: false,
+                baseURL: "github.com",
+                buildUrl: (values) => {
+                  switch (values.type) {
+                    case "issue":
+                      linkingEvents.push({
+                        ...values,
+                        comment_id: commentInsertQueryResult.comment_id,
+                        createdAt: new Date(event.createdAt),
+                        initiator: currentUser
+                      });
+                      // only replaces the URL when replacing full urls (from github), else don't do any replacement
+                      // as #<ref> are automatically managed by the <Markdown> component
+                      return !values.fullUrlMatch
+                        ? false
+                        : `https://${PRODUCTION_DOMAIN}/${values.user}/${values.project}/issues/${values.no}`;
+                    case "mention":
+                      linkingEvents.push({
+                        ...values,
+                        comment_id: commentInsertQueryResult.comment_id
+                      });
+                      return false;
+                    default:
+                      return false;
+                  }
+                }
+              })
+              .process(
+                new VFile({
+                  basename: "example.md",
+                  value: comment.body
+                })
+              );
 
-        const [commentInsertQueryResult] = await db
-          .insert(comments)
-          .values(commentPayload)
-          .returning({
-            comment_id: comments.id
-          });
+            await db
+              .update(comments)
+              .set({ content: String(preprocessedCommentBody) })
+              .where(eq(comments.id, commentInsertQueryResult.comment_id));
 
-        const preprocessedCommentBody = await remark()
-          .use(remarkGfm)
-          .use(remarkGithub, {
-            repository: `${GITHUB_AUTHOR_USERNAME}/${GITHUB_REPOSITORY_NAME}`,
-            mentionStrong: false,
-            replaceFullLinks: false,
-            baseURL: "github.com",
-            buildUrl: (values) => {
-              switch (values.type) {
-                case "issue":
-                  linkingEvents.push({
-                    ...values,
-                    comment_id: commentInsertQueryResult.comment_id,
-                    createdAt: new Date(event.createdAt),
-                    initiator: currentUser
-                  });
-                  // only replaces the URL when replacing full urls (from github), else don't do any replacement
-                  // as #<ref> are automatically managed by the <Markdown> component
-                  return !values.fullUrlMatch
-                    ? false
-                    : `https://${PRODUCTION_DOMAIN}/${values.user}/${values.project}/issues/${values.no}`;
-                case "mention":
-                  linkingEvents.push({
-                    ...values,
-                    comment_id: commentInsertQueryResult.comment_id
-                  });
-                  return false;
-                default:
-                  return false;
+            // Add event
+            eventPayload.comment_id = commentInsertQueryResult.comment_id;
+
+            /**
+             * INSERTING COMMENT REVISIONS
+             */
+            for (const edition of comment.userContentEdits.nodes) {
+              // Skip revisions without a diff
+              if (!edition.diff) {
+                continue;
+              }
+
+              faker.seed(stringToNumber(edition.editor.login));
+              const revisionPayload = {
+                comment_id: commentInsertQueryResult.comment_id,
+                created_at: new Date(edition.editedAt),
+                updated_content: edition.diff
+              } satisfies CommentRevisionInsert;
+
+              await db.insert(commentRevisions).values(revisionPayload);
+            }
+
+            /**
+             * INSERTING COMMENT REACTIONS
+             */
+            for (const reactionGroup of comment.reactionGroups) {
+              const reactionTypeMapping = {
+                THUMBS_UP: "PLUS_ONE",
+                THUMBS_DOWN: "MINUS_ONE",
+                EYES: "EYES",
+                CONFUSED: "CONFUSED",
+                HEART: "HEART",
+                HOORAY: "HOORAY",
+                ROCKET: "ROCKET",
+                LAUGH: "LAUGH"
+              } satisfies Record<ReactionTypeFromGH, ReactionType>;
+
+              for (let i = 0; i < reactionGroup.reactors.totalCount; i++) {
+                await db.insert(reactions).values({
+                  comment_id: commentInsertQueryResult.comment_id,
+                  type: reactionTypeMapping[reactionGroup.content]
+                });
               }
             }
-          })
-          .process(
-            new VFile({
-              basename: "example.md",
-              value: comment.body
-            })
-          );
+          } else if (event.__typename === "AssignedEvent") {
+            // if the user is in our DB, use that instead of a generated username & avatar url
+            const dbUser = await db
+              .select()
+              .from(users)
+              .where(sql`${users.username} = ${event.assignee.login}`);
+            const currentUser = dbUser[0];
 
-        await db.update(comments).set({
-          content: String(preprocessedCommentBody)
-        });
+            eventPayload = {
+              ...eventPayload,
+              assignee_username: currentUser
+                ? currentUser.username
+                : event.assignee.login,
+              assignee_avatar_url: currentUser
+                ? currentUser.avatar_url
+                : event.assignee.avatarUrl
+            };
+          } else if (event.__typename === "ClosedEvent") {
+            eventPayload.status =
+              event.stateReason === "NOT_PLANNED" ? "NOT_PLANNED" : "CLOSED";
+          } else if (event.__typename === "ReopenedEvent") {
+            eventPayload.status = "OPEN";
+          } else if (event.__typename === "RenamedTitleEvent") {
+            eventPayload.old_title = event.previousTitle;
+            eventPayload.new_title = event.currentTitle;
+          } else if (
+            event.__typename === "LabeledEvent" ||
+            event.__typename === "UnlabeledEvent"
+          ) {
+            const { label } = event;
+            const labelPayload = {
+              name: label.name,
+              color: `#${label.color}`,
+              description: label.description ?? undefined
+            } satisfies LabelInsert;
 
-        // Add event
-        eventPayload.comment_id = commentInsertQueryResult.comment_id;
+            const [labelInsertResult] = await db
+              .insert(labels)
+              .values(labelPayload)
+              .onConflictDoUpdate({
+                target: labels.name,
+                set: labelPayload
+              })
+              .returning({
+                label_id: labels.id
+              });
 
-        /**
-         * INSERTING COMMENT REVISIONS
-         */
-        for (const edition of comment.userContentEdits.nodes) {
-          // Skip revisions without a diff
-          if (!edition.diff) {
+            eventPayload.label_id = labelInsertResult.label_id;
+          } else {
             continue;
           }
 
-          faker.seed(stringToNumber(edition.editor.login));
-          // wipe out any revision existing for the comment
-          await db
-            .delete(commentRevisions)
-            .where(
-              eq(
-                commentRevisions.comment_id,
-                commentInsertQueryResult.comment_id
-              )
-            );
-
-          const revisionPayload = {
-            comment_id: commentInsertQueryResult.comment_id,
-            created_at: new Date(edition.editedAt),
-            updated_content: edition.diff
-          } satisfies CommentRevisionInsert;
-
-          await db.insert(commentRevisions).values(revisionPayload);
+          eventsToInsert.push(eventPayload);
         }
 
-        // wipe out any reaction associated to this comment
-        await db
-          .delete(reactions)
-          .where(eq(reactions.comment_id, commentInsertQueryResult.comment_id));
-
-        /**
-         * INSERTING COMMENT REACTIONS
-         */
-        for (const reactionGroup of comment.reactionGroups) {
-          const reactionTypeMapping = {
-            THUMBS_UP: "PLUS_ONE",
-            THUMBS_DOWN: "MINUS_ONE",
-            EYES: "EYES",
-            CONFUSED: "CONFUSED",
-            HEART: "HEART",
-            HOORAY: "HOORAY",
-            ROCKET: "ROCKET",
-            LAUGH: "LAUGH"
-          } satisfies Record<ReactionTypeFromGH, ReactionType>;
-
-          for (let i = 0; i < reactionGroup.reactors.totalCount; i++) {
-            await db.insert(reactions).values({
-              comment_id: commentInsertQueryResult.comment_id,
-              type: reactionTypeMapping[reactionGroup.content]
-            });
-          }
-        }
-      } else if (event.__typename === "AssignedEvent") {
-        // if the user is in our DB, use that instead of a generated username & avatar url
-        const dbUser = await db
-          .select()
-          .from(users)
-          .where(sql`${users.username} = ${event.assignee.login}`);
-        const currentUser = dbUser[0];
-
-        eventPayload = {
-          ...eventPayload,
-          assignee_username: currentUser
-            ? currentUser.username
-            : event.assignee.login,
-          assignee_avatar_url: currentUser
-            ? currentUser.avatar_url
-            : event.assignee.avatarUrl
-        };
-      } else if (event.__typename === "ClosedEvent") {
-        eventPayload.status =
-          event.stateReason === "NOT_PLANNED" ? "NOT_PLANNED" : "CLOSED";
-      } else if (event.__typename === "ReopenedEvent") {
-        eventPayload.status = "OPEN";
-      } else if (event.__typename === "RenamedTitleEvent") {
-        eventPayload.old_title = event.previousTitle;
-        eventPayload.new_title = event.currentTitle;
-      } else if (
-        event.__typename === "LabeledEvent" ||
-        event.__typename === "UnlabeledEvent"
-      ) {
-        const { label } = event;
-        const labelPayload = {
-          name: label.name,
-          color: `#${label.color}`,
-          description: label.description ?? undefined
-        } satisfies LabelInsert;
-
-        const [labelInsertResult] = await db
-          .insert(labels)
-          .values(labelPayload)
-          .onConflictDoUpdate({
-            target: labels.name,
-            set: labelPayload
-          })
-          .returning({
-            label_id: labels.id
+        if (eventsToInsert.length > 0) {
+          await db.insert(issueEvents).values(eventsToInsert).returning({
+            id: issueEvents.id
           });
-
-        eventPayload.label_id = labelInsertResult.label_id;
-      } else {
-        continue;
+        }
+        console.log(
+          `\ninserted \x1b[34m${eventsToInsert.length} events\x1b[37m ✅`
+        );
       }
 
-      eventsToInsert.push(eventPayload);
-    }
+      console.log(
+        `\nsuccessfully inserted \x1b[34m${totalNumberOfEvents} events\x1b[37m ✅`
+      );
 
-    if (eventsToInsert.length > 0) {
-      await db.insert(issueEvents).values(eventsToInsert).returning({
-        id: issueEvents.id
-      });
+      console.log(
+        `\nissue \x1b[34m${issue.number}\x1b[37m inserted successfully ✅`
+      );
+
+      console.log("--- INSERTING ISSUES USER MENTIONS ---");
+      let noOfMentionsInserted = 0;
+      const found: string[] = [];
+      for (const occurence of linkingEvents.filter(
+        (event) => event.type === "mention"
+      )) {
+        const username = occurence.user;
+
+        if (!found.includes(username)) {
+          noOfMentionsInserted++;
+          found.push(username);
+
+          await db
+            .insert(issueUserMentions)
+            .values({
+              username,
+              issue_id: issueInsertQueryResult.issue_id,
+              comment_id: occurence.comment_id
+            })
+            .onConflictDoNothing();
+        }
+      }
+
+      console.log(
+        `\n${noOfMentionsInserted} user mention inserted successfully ✅`
+      );
     }
-    console.log(
-      `\ninserted \x1b[34m${eventsToInsert.length} events\x1b[37m ✅`
+  );
+  if (!imported) {
+    console.warn(
+      `Skipping discussion import for existing issue #${issue.number}`
     );
+    return issueInsertQueryResult.issue_id;
   }
-
-  console.log(
-    `\nsuccessfully inserted \x1b[34m${totalNumberOfEvents} events\x1b[37m ✅`
-  );
-
-  console.log(
-    `\nissue \x1b[34m${issue.number}\x1b[37m inserted successfully ✅`
-  );
-
-  console.log("--- INSERTING ISSUES USER MENTIONS ---");
-  let noOfMentionsInserted = 0;
-  const found: string[] = [];
-  for (const occurence of linkingEvents.filter(
-    (event) => event.type === "mention"
-  )) {
-    const username = occurence.user;
-
-    if (!found.includes(username)) {
-      noOfMentionsInserted++;
-      found.push(username);
-
-      await db
-        .insert(issueUserMentions)
-        .values({
-          username,
-          issue_id: issueInsertQueryResult.issue_id,
-          comment_id: occurence.comment_id
-        })
-        .onConflictDoNothing();
-    }
-  }
-
-  console.log(
-    `\n${noOfMentionsInserted} user mention inserted successfully ✅`
-  );
 
   console.log("--- INSERTING ISSUES REFERENCES ---");
   let noOfReferencesInserted = 0;
