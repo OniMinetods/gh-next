@@ -1,14 +1,14 @@
-import "server-only";
+import "server-only"
 
-import type { GithubRepositoryData } from "~/lib/types";
-import { fetchFromGithubAPI } from "~/lib/server/utils.server";
+import { cache } from "react"
+import { nextCache } from "~/lib/server/rsc-utils.server"
+import { fetchFromGithubAPI } from "~/lib/server/utils.server"
+import { CacheKeys } from "~/lib/shared/cache-keys.shared"
 import {
   GITHUB_AUTHOR_USERNAME,
   GITHUB_REPOSITORY_NAME
-} from "~/lib/shared/constants";
-import { nextCache } from "~/lib/server/rsc-utils.server";
-import { CacheKeys } from "~/lib/shared/cache-keys.shared";
-import { cache } from "react";
+} from "~/lib/shared/constants"
+import type { GithubRepositoryData } from "~/lib/types"
 
 type RepositoryStatsResponse = {
   repository: {
@@ -116,41 +116,7 @@ export const getGithubRepoData = cache(async () => {
         }
       );
 
-      const {
-        repository: { stargazers: allStargazersData }
-      } = await fetchFromGithubAPI<StargazersResponse>(stargazersQuery, {
-        repoName: GITHUB_REPOSITORY_NAME,
-        repoOwner: GITHUB_AUTHOR_USERNAME
-      });
-
-      let allStargazers: GithubRepositoryData["stargazers"] =
-        allStargazersData.edges.map(({ node, starredAt }) => {
-          const { databaseId, ...rest } = node;
-          return { ...rest, id: databaseId, starredAt };
-        });
-      let nextCursor = allStargazersData.pageInfo.endCursor;
-      let hasNextPage = allStargazersData.pageInfo.hasNextPage;
-
-      while (hasNextPage) {
-        const {
-          repository: {
-            stargazers: { pageInfo, edges }
-          }
-        } = await fetchFromGithubAPI<StargazersResponse>(stargazersQuery, {
-          cursor: nextCursor,
-          repoName: GITHUB_REPOSITORY_NAME,
-          repoOwner: GITHUB_AUTHOR_USERNAME
-        });
-
-        nextCursor = pageInfo.endCursor;
-        hasNextPage = pageInfo.hasNextPage;
-        allStargazers = allStargazers.concat(
-          edges.map(({ node, starredAt }) => {
-            const { databaseId, ...rest } = node;
-            return { ...rest, id: databaseId, starredAt };
-          })
-        );
-      }
+      const allStargazers: GithubRepositoryData["stargazers"] = [];
 
       let totalPercent = 0;
       const languages = repository.languages.edges.map((edge) => {

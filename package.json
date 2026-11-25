@@ -8,6 +8,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "pnpm run test:unit && pnpm run test:e2e",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
     "postinstall": "next telemetry disable",
     "db:generate": "set -a; . ./.env.local; set +a && drizzle-kit generate:pg",
     "db:studio": "set -a; . ./.env.local; set +a && drizzle-kit studio --port 3003 --verbose",
@@ -71,6 +74,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20230821.0",
     "@faker-js/faker": "^8.0.2",
+    "@playwright/test": "1.65.1",
     "@tanstack/react-query-devtools": "^5.0.0",
     "@types/node": "20.5.7",
     "@types/nprogress": "^0.2.3",
@@ -84,7 +88,8 @@
     "prettier-plugin-tailwindcss": "^0.5.4",
     "tailwindcss": "3.3.3",
     "tsx": "^3.12.8",
-    "typescript": "5.3.3"
+    "typescript": "5.3.3",
+    "vitest": "4.1.12"
   },
   "packageManager": "pnpm@10.18.1",
   "pnpm": {

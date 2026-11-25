@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:12-alpine
+    environment:
+      POSTGRES_USER: gh_next_e2e
+      POSTGRES_PASSWORD: e2e-only
+      POSTGRES_DB: gh_next_e2e
+    ports:
+      - "127.0.0.1:55433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "pg_isready",
+          "-h",
+          "127.0.0.1",
+          "-U",
+          "gh_next_e2e",
+          "-d",
+          "gh_next_e2e"
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  webdis:
+    image: nicolas/webdis:latest
+    volumes:
+      - ../../docker/webdis.json:/etc/webdis.prod.json:ro
+    ports:
+      - "127.0.0.1:56380:7379"

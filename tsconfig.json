@@ -30,8 +30,10 @@
     "next-env.d.ts",
     "**/*.ts",
     "**/*.mjs",
+    "vitest.config.mts",
     "**/*.tsx",
-    ".next/types/**/*.ts"
+    ".next/types/**/*.ts",
+    ".next-e2e/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
