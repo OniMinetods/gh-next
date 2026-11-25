@@ -135,6 +135,7 @@ export const Button = React.forwardRef<
     return (
       <button
         ref={ref as React.Ref<HTMLButtonElement>}
+        disabled={disabled}
         className={clsx(commonClasses, {
           "focus-visible:outline focus-visible:-outline-offset-2":
             !isLoading && !disabled,

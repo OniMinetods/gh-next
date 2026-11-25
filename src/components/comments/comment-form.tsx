@@ -57,6 +57,7 @@ export function CommentForm({
   const request = useRef<Request>();
   const [initialDraft, setInitialDraft] = useState<string | undefined>();
   const [editorKey, setEditorKey] = useState(0);
+  const [ready, setReady] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<SaveError>();
 
@@ -67,6 +68,7 @@ export function CommentForm({
       setInitialDraft(draft.content);
       setEditorKey((previous) => previous + 1);
     }
+    setReady(true);
     if (isEditing) {
       const frame = requestAnimationFrame(() =>
         form.current?.querySelector("textarea")?.focus()
@@ -77,7 +79,7 @@ export function CommentForm({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pending) return;
+    if (!ready || pending) return;
     const content = String(
       new FormData(event.currentTarget).get("content") ?? ""
     );
@@ -140,7 +142,7 @@ export function CommentForm({
         defaultValue={initialDraft ?? initialContent}
         renderMarkdownAction={preview}
         tabToIndent={false}
-        readOnly={pending}
+        readOnly={!ready || pending}
         required
         maxLength={COMMENT_MAX_LENGTH}
         validationStatus={error?.field ? "error" : undefined}
@@ -168,7 +170,7 @@ export function CommentForm({
             Cancel
           </Button>
         )}
-        <Button type="submit" disabled={pending}>
+        <Button type="submit" disabled={!ready || pending}>
           {isEditing ? "Save changes" : "Comment"}
         </Button>
       </div>

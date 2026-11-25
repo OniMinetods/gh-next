@@ -128,15 +128,42 @@ test("rolls back an unconfirmed submission and reuses its request after reload",
 }) => {
   const path = issuePath(55);
   const page = await signedIn("author", path);
-  const editor = page.getByRole("textbox", { name: /Leave a comment/ });
+  const discussion = page.getByRole("region", {
+    name: "Discussion",
+    exact: true
+  });
+  const editor = discussion.getByRole("textbox", { name: /Leave a comment/ });
+  const submit = discussion.getByRole("button", {
+    name: "Comment",
+    exact: true
+  });
+  await page.waitForLoadState("load");
+  const clientScripts = "**/_next/static/**/*.js";
+  let resumeScripts!: () => void;
+  const scriptsReady = new Promise<void>((resolve) => {
+    resumeScripts = resolve;
+  });
+  await page.route(clientScripts, async (route) => {
+    await scriptsReady;
+    await route.continue();
+  });
+  try {
+    await page.reload({ waitUntil: "commit" });
+    await expect(submit).toBeDisabled();
+    await expect(editor).not.toBeEditable();
+  } finally {
+    resumeScripts();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+
+  await expect(submit).toBeEnabled();
   await editor.fill("   ");
-  await page.getByRole("button", { name: "Comment", exact: true }).click();
-  await expect(
-    page
-      .getByRole("region", { name: "Discussion", exact: true })
-      .getByRole("alert")
-  ).toHaveText(/non-empty comment/);
+  await submit.click();
+  await expect(discussion.getByRole("alert")).toHaveText(/non-empty comment/);
+  await expect(editor).toHaveAttribute("aria-invalid", "true");
   await expect(editor).toHaveValue("   ");
+  await expect(page).toHaveURL(path);
+  await expect(authorComment(page)).toHaveCount(0);
 
   await editor.fill("Retry this single publication");
   let release!: () => void;
@@ -156,7 +183,7 @@ test("rolls back an unconfirmed submission and reuses its request after reload",
     }
   );
 
-  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await submit.click();
   try {
     await expect(
       page.getByRole("status").filter({ hasText: "Posting comment" })
@@ -167,11 +194,9 @@ test("rolls back an unconfirmed submission and reuses its request after reload",
   } finally {
     release();
   }
-  await expect(
-    page
-      .getByRole("region", { name: "Discussion", exact: true })
-      .getByRole("alert")
-  ).toHaveText(/Could not confirm the save/);
+  await expect(discussion.getByRole("alert")).toHaveText(
+    /Could not confirm the save/
+  );
   await expect(
     page.getByRole("status").filter({ hasText: "Posting comment" })
   ).toHaveCount(0);
@@ -179,7 +204,7 @@ test("rolls back an unconfirmed submission and reuses its request after reload",
 
   await page.reload();
   await expect(editor).toHaveValue("Retry this single publication");
-  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await submit.click();
   await expect(page).toHaveURL(/\?comment=\d+#issuecomment-\d+$/);
   await expect(authorComment(page)).toHaveCount(1);
   await page.goto(path);
